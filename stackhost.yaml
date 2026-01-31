@@ -1,0 +1,11 @@
+version: 1.0
+type: worker 
+name: stock-bot
+runtime: python
+
+build:
+  command: pip install -r requirements.txt
+
+run:
+  command: python bot.py
+  restart_policy: always
