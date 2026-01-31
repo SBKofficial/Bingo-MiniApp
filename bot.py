@@ -109,12 +109,16 @@ def search_yahoo_categorized(query):
     except: return {}, []
 
 # ==========================================
-# 4. DATA ENGINE
+# 4. DATA ENGINE (Fixed for 200 DMA)
 # ==========================================
-def get_data(ticker, period="1y"):
-    print(f"📉 Fetching {period} Data: {ticker}")
+def get_data(ticker, requested_period="1y"):
+    print(f"📉 Fetching Data for {ticker}...")
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range={period}"
+        # ALWAYS fetch 1 Year minimum to ensure we have enough data for 200 DMA
+        # We will slice it later if the user only wanted 1 Month.
+        fetch_range = "1y" 
+        
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range={fetch_range}"
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers, timeout=4)
         data = response.json()
@@ -129,30 +133,57 @@ def get_data(ticker, period="1y"):
         timestamps = result['timestamp']
         closes = result['indicators']['quote'][0]['close']
         
+        # Clean Data
         clean_data = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
         if not clean_data: return None
         
-        timestamps, closes = zip(*clean_data)
+        all_timestamps, all_closes = zip(*clean_data)
         
+        # --- 1. CALCULATE 200 DMA (Using ALL Data) ---
         dma_200 = 0
         trend_text = "N/A"
-        if len(closes) >= 200:
-             dma_200 = sum(closes[-200:]) / 200
+        
+        if len(all_closes) >= 200:
+             dma_200 = sum(all_closes[-200:]) / 200
              trend = "🟢 BULLISH" if price > dma_200 else "🔴 BEARISH"
              trend_text = f"{trend} (Price > 200 DMA)" if price > dma_200 else f"{trend} (Price < 200 DMA)"
-        elif len(closes) > 0:
+        else:
              trend_text = "⚠️ New Listing (No 200 DMA)"
 
-        start_price = closes[0]
-        current_price = closes[-1]
+        # --- 2. SLICE DATA FOR THE REQUESTED PERIOD ---
+        # Now we cut the data down to what the user actually asked for (1m, 3m, etc.)
+        
+        # approximate trading days per period
+        slice_map = {
+            "1mo": 22,   # ~1 Month
+            "3mo": 66,   # ~3 Months
+            "6mo": 132,  # ~6 Months
+            "1y": 252    # ~1 Year
+        }
+        
+        days_needed = slice_map.get(requested_period, 252)
+        
+        # Slice to the last N days
+        final_prices = all_closes[-days_needed:]
+        final_timestamps = all_timestamps[-days_needed:]
+        
+        # Calculate return based on the SLICED data (e.g. return for just the last 1 month)
+        start_price = final_prices[0]
+        current_price = final_prices[-1]
         pct_change = ((current_price - start_price) / start_price) * 100
 
         return {
-            "price": price, "dma": dma_200, "trend": trend_text,
-            "currency": currency, "prices": closes, "timestamps": timestamps,
-            "change": pct_change
+            "price": price, 
+            "dma": dma_200,          # Correct 200 DMA using 1Y history
+            "trend": trend_text,     # Correct Trend
+            "currency": currency, 
+            "prices": final_prices,          # Sliced for Chart
+            "timestamps": final_timestamps,  # Sliced for Chart
+            "change": pct_change             # Sliced Return
         }
-    except: return None
+    except Exception as e:
+        print(f"Data Error: {e}")
+        return None
 
 # ==========================================
 # 5. MESSAGE FORMATTER (With Invisible Link)
