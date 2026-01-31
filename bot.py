@@ -11,7 +11,7 @@ import urllib.parse
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-BOT_TOKEN = "PASTE_YOUR_TOKEN_HERE"
+BOT_TOKEN = "8266741813:AAEsSvUIQhdDVKudeBck28QOFpnuk2rTSzA"
 GROUP_LINK = "https://t.me/traders_chat_group"
 
 # Enable logs
