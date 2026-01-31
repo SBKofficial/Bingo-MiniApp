@@ -1,17 +1,17 @@
 import telebot
-from telebot.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, LinkPreviewOptions
 import requests
 import logging
 import uuid
 import time
 from datetime import datetime
 import json
-import urllib.parse # To encode the URL safely
+import urllib.parse 
 
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-BOT_TOKEN = "8266741813:AAEsSvUIQhdDVKudeBck28QOFpnuk2rTSzA"
+BOT_TOKEN = "PASTE_YOUR_TOKEN_HERE"
 GROUP_LINK = "https://t.me/traders_chat_group"
 
 # Enable logs
@@ -28,7 +28,6 @@ def get_chart_url(symbol, prices, timestamps, period, change_pct):
     """Generates a QuickChart URL string (No download)"""
     try:
         # 1. Aggressive Downsampling (Keep URL short for Telegram Preview)
-        # Telegram ignores previews if URL is > 2000 chars
         max_points = 60 
         step = len(prices) // max_points if len(prices) > max_points else 1
         
@@ -58,14 +57,13 @@ def get_chart_url(symbol, prices, timestamps, period, change_pct):
                 "title": { "display": True, "text": f"{symbol} ({period.upper()})", "fontColor": "#fff" },
                 "legend": { "display": False },
                 "scales": {
-                    "xAxes": [{ "display": False }], # Hide X-Axis text to save URL space
+                    "xAxes": [{ "display": False }], 
                     "yAxes": [{ "gridLines": { "color": "rgba(255,255,255,0.1)" }, "ticks": { "fontColor": "#ccc" } }]
                 }
             }
         }
         
         # 4. Create the URL
-        # We assume dark mode background
         json_str = json.dumps(chart_config)
         encoded_json = urllib.parse.quote(json_str)
         
@@ -115,7 +113,6 @@ def get_data(ticker, requested_period="1y"):
     print(f"📉 Fetching Data for {ticker}...")
     try:
         # ALWAYS fetch 1 Year minimum to ensure we have enough data for 200 DMA
-        # We will slice it later if the user only wanted 1 Month.
         fetch_range = "1y" 
         
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range={fetch_range}"
@@ -133,7 +130,6 @@ def get_data(ticker, requested_period="1y"):
         timestamps = result['timestamp']
         closes = result['indicators']['quote'][0]['close']
         
-        # Clean Data
         clean_data = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
         if not clean_data: return None
         
@@ -151,35 +147,24 @@ def get_data(ticker, requested_period="1y"):
              trend_text = "⚠️ New Listing (No 200 DMA)"
 
         # --- 2. SLICE DATA FOR THE REQUESTED PERIOD ---
-        # Now we cut the data down to what the user actually asked for (1m, 3m, etc.)
-        
-        # approximate trading days per period
-        slice_map = {
-            "1mo": 22,   # ~1 Month
-            "3mo": 66,   # ~3 Months
-            "6mo": 132,  # ~6 Months
-            "1y": 252    # ~1 Year
-        }
-        
+        slice_map = { "1mo": 22, "3mo": 66, "6mo": 132, "1y": 252 }
         days_needed = slice_map.get(requested_period, 252)
         
-        # Slice to the last N days
         final_prices = all_closes[-days_needed:]
         final_timestamps = all_timestamps[-days_needed:]
         
-        # Calculate return based on the SLICED data (e.g. return for just the last 1 month)
         start_price = final_prices[0]
         current_price = final_prices[-1]
         pct_change = ((current_price - start_price) / start_price) * 100
 
         return {
             "price": price, 
-            "dma": dma_200,          # Correct 200 DMA using 1Y history
-            "trend": trend_text,     # Correct Trend
+            "dma": dma_200,          
+            "trend": trend_text,    
             "currency": currency, 
-            "prices": final_prices,          # Sliced for Chart
-            "timestamps": final_timestamps,  # Sliced for Chart
-            "change": pct_change             # Sliced Return
+            "prices": final_prices,          
+            "timestamps": final_timestamps,  
+            "change": pct_change             
         }
     except Exception as e:
         print(f"Data Error: {e}")
@@ -194,7 +179,6 @@ def format_message(name, symbol, data, period, show_chart=False):
     cur = "₹" if data['currency'] == "INR" else "$"
     emoji = "🟢" if data['change'] > 0 else "🔴"
     
-    # Base Text
     text = (
         f"📊 <b>{name} ({symbol})</b>\n"
         f"💰 Price: {cur}{p:,.2f}\n"
@@ -208,7 +192,6 @@ def format_message(name, symbol, data, period, show_chart=False):
     if show_chart:
         chart_url = get_chart_url(symbol, data['prices'], data['timestamps'], period, data['change'])
         if chart_url:
-            # The invisible character (&#8205;) makes the link valid but hidden
             text = f"<a href='{chart_url}'>&#8205;</a>" + text
             
     return text
@@ -250,43 +233,30 @@ def handle_clicks(call):
         parts = call.data.split('_')
         action = parts[0]
         
-        # --- 1. OPEN CATEGORY (Folder View) ---
+        # --- SHOW CATEGORY ---
         if action == "CAT":
             cat = parts[1]
-            # Handle multi-word categories like US_GLOBAL
-            if len(parts) > 3: 
-                cat = parts[1] + "_" + parts[2]
-                sid = parts[3]
-            else: 
-                sid = parts[2]
+            if len(parts) > 3: cat = parts[1] + "_" + parts[2]; sid = parts[3]
+            else: sid = parts[2]
             
-            if sid not in SEARCH_CACHE:
-                bot.answer_callback_query(call.id, "⚠️ Search expired. Restart with /analyze")
-                return
-
+            if sid not in SEARCH_CACHE: return
             items = SEARCH_CACHE[sid].get(cat, [])
             markup = InlineKeyboardMarkup()
             for item in items[:10]:
-                # Each button carries: Symbol, SearchID, and Category (to know where to go back)
+                # Pass 'cat' so we know where to come back to
                 markup.add(InlineKeyboardButton(f"{item['symbol']} - {item['name'][:20]}", 
                                                 callback_data=f"GET_{item['symbol']}_{sid}_{cat}"))
-            
-            # Back to the very first Market Selection Menu
             markup.add(InlineKeyboardButton("⬅️ Back to Markets", callback_data=f"BACK_{sid}"))
-            
-            bot.edit_message_text(f"📂 <b>{cat.replace('_',' ')} Results:</b>", 
-                                  chat_id=call.message.chat.id, message_id=call.message.message_id, 
-                                  reply_markup=markup, parse_mode="HTML")
+            bot.edit_message_text(f"📂 <b>{cat.replace('_',' ')} Results:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
-        # --- 2. TEXT VIEW (Initial Result) ---
+        # --- GET DATA (Text View) ---
         elif action == "GET" or action == "TEXT":
-            symbol = parts[1]
-            sid = parts[2]
-            prev_cat = parts[3] if len(parts) > 3 else "INDIA" # Remember where we came from
-            
+            symbol = parts[1]; sid = parts[2]
+            prev_cat = parts[3] if len(parts) > 3 else "INDIA"
+
             bot.answer_callback_query(call.id, f"Analyzing {symbol}...")
-            data = get_data(symbol, "1y")
             
+            data = get_data(symbol, "1y")
             if data:
                 msg = format_message(symbol, symbol, data, "1y", show_chart=False)
                 markup = InlineKeyboardMarkup()
@@ -296,18 +266,19 @@ def handle_clicks(call):
                     InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}_{prev_cat}"),
                     InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}_{prev_cat}")
                 )
-                # DYNAMIC BACK: Goes back to the exact category you were browsing
-                markup.add(InlineKeyboardButton(f"⬅️ Back to {prev_cat.replace('_',' ')}", 
-                                                callback_data=f"CAT_{prev_cat}_{sid}")) 
+                markup.add(InlineKeyboardButton(f"⬅️ Back to {prev_cat.replace('_',' ')}", callback_data=f"CAT_{prev_cat}_{sid}"))
+                
+                # Disable preview to show only text
+                no_preview = LinkPreviewOptions(is_disabled=True)
                 
                 if action == "TEXT":
+                    # Delete & Send if switching from Image -> Text (Telegram limitation)
                     bot.delete_message(call.message.chat.id, call.message.message_id)
-                    bot.send_message(call.message.chat.id, msg, reply_markup=markup, parse_mode="HTML")
+                    bot.send_message(call.message.chat.id, msg, reply_markup=markup, parse_mode="HTML", link_preview_options=no_preview)
                 else:
-                    bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, 
-                                          parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+                    bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, link_preview_options=no_preview)
 
-        # --- 3. CHART VIEW (Image Preview) ---
+        # --- UPDATE CHART (Preview Mode) ---
         elif action == "TIME":
             period = parts[1]; symbol = parts[2]; sid = parts[3]
             prev_cat = parts[4] if len(parts) > 4 else "INDIA"
@@ -324,14 +295,15 @@ def handle_clicks(call):
                     InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}_{prev_cat}"),
                     InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}_{prev_cat}")
                 )
-                # Go back to the TEXT VIEW of this specific stock
                 markup.add(InlineKeyboardButton("📄 Text View", callback_data=f"TEXT_{symbol}_{sid}_{prev_cat}"))
                 markup.add(InlineKeyboardButton("⚡ Join Group", url=GROUP_LINK))
 
-                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, 
-                                      parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
+                # Enable preview to show Chart
+                show_preview = LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
 
-        # --- 4. BACK TO MAIN MARKET SELECTION ---
+                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, link_preview_options=show_preview)
+
+        # --- BACK NAV ---
         elif action == "BACK":
             sid = parts[1]
             if sid in SEARCH_CACHE:
@@ -339,15 +311,13 @@ def handle_clicks(call):
                 markup = InlineKeyboardMarkup()
                 for cat, items in categories.items():
                     if items:
-                         markup.add(InlineKeyboardButton(f"{cat.replace('_',' ')} ({len(items)})", 
-                                                         callback_data=f"CAT_{cat}_{sid}"))
-                bot.edit_message_text("👇 <b>Select Market:</b>", chat_id=call.message.chat.id, 
-                                      message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+                         markup.add(InlineKeyboardButton(f"{cat.replace('_',' ')} ({len(items)})", callback_data=f"CAT_{cat}_{sid}"))
+                bot.edit_message_text("👇 <b>Select Market:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
     except Exception as e:
-        print(f"🔥 Callback Error: {e}")
+        print(f"Error: {e}")
 
-print("✅ Bot Live (Instant Link Previews)...")
+print("✅ Bot Live (Instant Link Previews & Clean Logs)...")
 while True:
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
