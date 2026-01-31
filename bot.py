@@ -250,70 +250,88 @@ def handle_clicks(call):
         parts = call.data.split('_')
         action = parts[0]
         
-        # --- SHOW CATEGORY ---
+        # --- 1. OPEN CATEGORY (Folder View) ---
         if action == "CAT":
             cat = parts[1]
-            if len(parts) > 3: cat = parts[1] + "_" + parts[2]; sid = parts[3]
-            else: sid = parts[2]
+            # Handle multi-word categories like US_GLOBAL
+            if len(parts) > 3: 
+                cat = parts[1] + "_" + parts[2]
+                sid = parts[3]
+            else: 
+                sid = parts[2]
             
-            if sid not in SEARCH_CACHE: return
+            if sid not in SEARCH_CACHE:
+                bot.answer_callback_query(call.id, "⚠️ Search expired. Restart with /analyze")
+                return
+
             items = SEARCH_CACHE[sid].get(cat, [])
             markup = InlineKeyboardMarkup()
             for item in items[:10]:
-                markup.add(InlineKeyboardButton(f"{item['symbol']} - {item['name'][:20]}", callback_data=f"GET_{item['symbol']}_{sid}"))
-            markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"BACK_{sid}"))
-            bot.edit_message_text(f"📂 <b>{cat} Results:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+                # Each button carries: Symbol, SearchID, and Category (to know where to go back)
+                markup.add(InlineKeyboardButton(f"{item['symbol']} - {item['name'][:20]}", 
+                                                callback_data=f"GET_{item['symbol']}_{sid}_{cat}"))
+            
+            # Back to the very first Market Selection Menu
+            markup.add(InlineKeyboardButton("⬅️ Back to Markets", callback_data=f"BACK_{sid}"))
+            
+            bot.edit_message_text(f"📂 <b>{cat.replace('_',' ')} Results:</b>", 
+                                  chat_id=call.message.chat.id, message_id=call.message.message_id, 
+                                  reply_markup=markup, parse_mode="HTML")
 
-        # --- GET DATA (Default: No Chart, Just Text) ---
-        elif action == "GET":
+        # --- 2. TEXT VIEW (Initial Result) ---
+        elif action == "GET" or action == "TEXT":
             symbol = parts[1]
             sid = parts[2]
-            bot.answer_callback_query(call.id, f"Analyzing {symbol}...")
+            prev_cat = parts[3] if len(parts) > 3 else "INDIA" # Remember where we came from
             
+            bot.answer_callback_query(call.id, f"Analyzing {symbol}...")
             data = get_data(symbol, "1y")
+            
             if data:
-                # show_chart=False (Standard View)
                 msg = format_message(symbol, symbol, data, "1y", show_chart=False)
                 markup = InlineKeyboardMarkup()
                 markup.row(
-                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}"),
-                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}"),
-                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}"),
-                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}")
+                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}_{prev_cat}"),
+                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}_{prev_cat}"),
+                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}_{prev_cat}"),
+                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}_{prev_cat}")
                 )
-                markup.add(InlineKeyboardButton("⬅️ Back Menu", callback_data=f"CAT_INDIA_{sid}")) # Approximate back
+                # DYNAMIC BACK: Goes back to the exact category you were browsing
+                markup.add(InlineKeyboardButton(f"⬅️ Back to {prev_cat.replace('_',' ')}", 
+                                                callback_data=f"CAT_{prev_cat}_{sid}")) 
                 
-                # NOTE: link_preview_options allows us to Force Hide/Show preview
-                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+                if action == "TEXT":
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                    bot.send_message(call.message.chat.id, msg, reply_markup=markup, parse_mode="HTML")
+                else:
+                    bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, 
+                                          parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
-        # --- UPDATE CHART (Preview Mode) ---
+        # --- 3. CHART VIEW (Image Preview) ---
         elif action == "TIME":
-            period = parts[1]
-            symbol = parts[2]
-            sid = parts[3]
+            period = parts[1]; symbol = parts[2]; sid = parts[3]
+            prev_cat = parts[4] if len(parts) > 4 else "INDIA"
             
             bot.answer_callback_query(call.id, f"Loading {period} Chart...")
             data = get_data(symbol, period)
             
             if data:
-                # show_chart=True (Adds the Invisible Link)
                 msg = format_message(symbol, symbol, data, period, show_chart=True)
-                
                 markup = InlineKeyboardMarkup()
                 markup.row(
-                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}"),
-                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}"),
-                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}"),
-                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}")
+                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}_{prev_cat}"),
+                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}_{prev_cat}"),
+                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}_{prev_cat}"),
+                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}_{prev_cat}")
                 )
-                # "Close Chart" button just reloads data with show_chart=False
-                markup.add(InlineKeyboardButton("❌ Close Chart", callback_data=f"GET_{symbol}_{sid}"))
+                # Go back to the TEXT VIEW of this specific stock
+                markup.add(InlineKeyboardButton("📄 Text View", callback_data=f"TEXT_{symbol}_{sid}_{prev_cat}"))
                 markup.add(InlineKeyboardButton("⚡ Join Group", url=GROUP_LINK))
 
-                # disable_web_page_preview=False enables the chart
-                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
+                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, 
+                                      parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
 
-        # --- BACK NAV ---
+        # --- 4. BACK TO MAIN MARKET SELECTION ---
         elif action == "BACK":
             sid = parts[1]
             if sid in SEARCH_CACHE:
@@ -321,11 +339,13 @@ def handle_clicks(call):
                 markup = InlineKeyboardMarkup()
                 for cat, items in categories.items():
                     if items:
-                         markup.add(InlineKeyboardButton(f"{cat} ({len(items)})", callback_data=f"CAT_{cat}_{sid}"))
-                bot.edit_message_text("👇 <b>Select Market:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
+                         markup.add(InlineKeyboardButton(f"{cat.replace('_',' ')} ({len(items)})", 
+                                                         callback_data=f"CAT_{cat}_{sid}"))
+                bot.edit_message_text("👇 <b>Select Market:</b>", chat_id=call.message.chat.id, 
+                                      message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"🔥 Callback Error: {e}")
 
 print("✅ Bot Live (Instant Link Previews)...")
 while True:
