@@ -11,6 +11,7 @@ import urllib.parse
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
+# ✅ NEW TOKEN UPDATED BELOW
 BOT_TOKEN = "8266741813:AAEsSvUIQhdDVKudeBck28QOFpnuk2rTSzA"
 GROUP_LINK = "https://t.me/traders_chat_group"
 
@@ -25,20 +26,17 @@ SEARCH_CACHE = {}
 # 2. URL GENERATOR (For Image Preview)
 # ==========================================
 def get_chart_url(symbol, prices, timestamps, period, change_pct):
-    """Generates a QuickChart URL string (No download)"""
     try:
-        # 1. Aggressive Downsampling (Keep URL short for Telegram Preview)
+        # Aggressive Downsampling for URL limit
         max_points = 60 
         step = len(prices) // max_points if len(prices) > max_points else 1
         
         dates = [datetime.fromtimestamp(ts).strftime('%d %b') for ts in timestamps[::step]]
         values = prices[::step]
         
-        # 2. Colors
         line_color = 'rgb(0, 255, 0)' if change_pct >= 0 else 'rgb(255, 0, 0)'
         fill_color = 'rgba(0, 255, 0, 0.2)' if change_pct >= 0 else 'rgba(255, 0, 0, 0.2)'
         
-        # 3. Build Config
         chart_config = {
             "type": "line",
             "data": {
@@ -63,23 +61,21 @@ def get_chart_url(symbol, prices, timestamps, period, change_pct):
             }
         }
         
-        # 4. Create the URL
         json_str = json.dumps(chart_config)
         encoded_json = urllib.parse.quote(json_str)
-        
         return f"https://quickchart.io/chart?bkg=%23151515&w=800&h=400&c={encoded_json}"
-
-    except Exception as e:
-        print(f"🔥 URL Error: {e}")
-        return ""
+    except: return ""
 
 # ==========================================
 # 3. SEARCH ENGINE
 # ==========================================
 def search_yahoo_categorized(query):
+    print(f"🔎 Searching: {query}")
     try:
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=50&newsCount=0"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
         
@@ -104,23 +100,31 @@ def search_yahoo_categorized(query):
 
         for key in categories: categories[key].sort(key=lambda x: len(x['symbol']))
         return categories, all_results
-    except: return {}, []
+    except Exception as e:
+        print(f"🔥 Search Failed: {e}")
+        return {}, []
 
 # ==========================================
-# 4. DATA ENGINE (Fixed for 200 DMA)
+# 4. DATA ENGINE (Robust)
 # ==========================================
 def get_data(ticker, requested_period="1y"):
-    print(f"📉 Fetching Data for {ticker}...")
+    print(f"📉 Fetching Data: {ticker}")
     try:
-        # ALWAYS fetch 1 Year minimum to ensure we have enough data for 200 DMA
-        fetch_range = "1y" 
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1y"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=5)
         
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range={fetch_range}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=4)
+        if response.status_code != 200:
+            print(f"❌ Yahoo Error: Status {response.status_code}")
+            return None
+            
         data = response.json()
         
-        if not data['chart']['result']: return None
+        if not data['chart']['result']: 
+            print("❌ No Data Found in JSON")
+            return None
 
         result = data['chart']['result'][0]
         meta = result['meta']
@@ -135,10 +139,8 @@ def get_data(ticker, requested_period="1y"):
         
         all_timestamps, all_closes = zip(*clean_data)
         
-        # --- 1. CALCULATE 200 DMA (Using ALL Data) ---
         dma_200 = 0
         trend_text = "N/A"
-        
         if len(all_closes) >= 200:
              dma_200 = sum(all_closes[-200:]) / 200
              trend = "🟢 BULLISH" if price > dma_200 else "🔴 BEARISH"
@@ -146,7 +148,6 @@ def get_data(ticker, requested_period="1y"):
         else:
              trend_text = "⚠️ New Listing (No 200 DMA)"
 
-        # --- 2. SLICE DATA FOR THE REQUESTED PERIOD ---
         slice_map = { "1mo": 22, "3mo": 66, "6mo": 132, "1y": 252 }
         days_needed = slice_map.get(requested_period, 252)
         
@@ -158,20 +159,15 @@ def get_data(ticker, requested_period="1y"):
         pct_change = ((current_price - start_price) / start_price) * 100
 
         return {
-            "price": price, 
-            "dma": dma_200,          
-            "trend": trend_text,    
-            "currency": currency, 
-            "prices": final_prices,          
-            "timestamps": final_timestamps,  
-            "change": pct_change             
+            "price": price, "dma": dma_200, "trend": trend_text, "currency": currency, 
+            "prices": final_prices, "timestamps": final_timestamps, "change": pct_change
         }
     except Exception as e:
-        print(f"Data Error: {e}")
+        print(f"🔥 FETCH ERROR: {e}")
         return None
 
 # ==========================================
-# 5. MESSAGE FORMATTER (With Invisible Link)
+# 5. FORMATTER
 # ==========================================
 def format_message(name, symbol, data, period, show_chart=False):
     p = data['price']
@@ -188,7 +184,6 @@ def format_message(name, symbol, data, period, show_chart=False):
         f"via @{bot.get_me().username}"
     )
     
-    # MAGIC: Embed Invisible Link for Preview
     if show_chart:
         chart_url = get_chart_url(symbol, data['prices'], data['timestamps'], period, data['change'])
         if chart_url:
@@ -222,7 +217,7 @@ def start_search(message):
         for cat, items in categories.items():
             if items:
                 label = {'INDIA': "🇮🇳 India", 'US_GLOBAL': "🌎 Global", 'CRYPTO': "₿ Crypto", 'FUNDS': "📉 Funds"}.get(cat, "📊 Other")
-                markup.add(InlineKeyboardButton(f"{label} ({len(items)})", callback_data=f"CAT_{cat}_{search_id}"))
+                markup.add(InlineKeyboardButton(f"{label} ({len(items)})", callback_data=f"CAT|{cat}|{search_id}"))
         
         bot.edit_message_text(f"👇 <b>Select Market for '{query}':</b>", chat_id=message.chat.id, message_id=loading.message_id, reply_markup=markup, parse_mode="HTML")
     except: pass
@@ -230,58 +225,58 @@ def start_search(message):
 @bot.callback_query_handler(func=lambda call: True)
 def handle_clicks(call):
     try:
-        parts = call.data.split('_')
+        parts = call.data.split('|')
         action = parts[0]
         
         # --- SHOW CATEGORY ---
         if action == "CAT":
-            cat = parts[1]
-            if len(parts) > 3: cat = parts[1] + "_" + parts[2]; sid = parts[3]
-            else: sid = parts[2]
+            cat = parts[1]; sid = parts[2]
             
-            if sid not in SEARCH_CACHE: return
+            if sid not in SEARCH_CACHE:
+                bot.answer_callback_query(call.id, "⚠️ Search expired. Try /analyze again.")
+                return
+
             items = SEARCH_CACHE[sid].get(cat, [])
             markup = InlineKeyboardMarkup()
             for item in items[:10]:
-                # Pass 'cat' so we know where to come back to
                 markup.add(InlineKeyboardButton(f"{item['symbol']} - {item['name'][:20]}", 
-                                                callback_data=f"GET_{item['symbol']}_{sid}_{cat}"))
-            markup.add(InlineKeyboardButton("⬅️ Back to Markets", callback_data=f"BACK_{sid}"))
+                                                callback_data=f"GET|{item['symbol']}|{sid}|{cat}"))
+            markup.add(InlineKeyboardButton("⬅️ Back to Markets", callback_data=f"BACK|{sid}"))
             bot.edit_message_text(f"📂 <b>{cat.replace('_',' ')} Results:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
         # --- GET DATA (Text View) ---
         elif action == "GET" or action == "TEXT":
-            symbol = parts[1]; sid = parts[2]
-            prev_cat = parts[3] if len(parts) > 3 else "INDIA"
-
-            bot.answer_callback_query(call.id, f"Analyzing {symbol}...")
+            symbol = parts[1]; sid = parts[2]; prev_cat = parts[3]
+            
+            if action == "TEXT": bot.answer_callback_query(call.id, "Switching to Text...")
+            else: bot.answer_callback_query(call.id, f"Analyzing {symbol}...")
             
             data = get_data(symbol, "1y")
+            
             if data:
                 msg = format_message(symbol, symbol, data, "1y", show_chart=False)
                 markup = InlineKeyboardMarkup()
                 markup.row(
-                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}_{prev_cat}"),
-                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}_{prev_cat}"),
-                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}_{prev_cat}"),
-                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}_{prev_cat}")
+                    InlineKeyboardButton("1M", callback_data=f"TIME|1mo|{symbol}|{sid}|{prev_cat}"),
+                    InlineKeyboardButton("3M", callback_data=f"TIME|3mo|{symbol}|{sid}|{prev_cat}"),
+                    InlineKeyboardButton("6M", callback_data=f"TIME|6mo|{symbol}|{sid}|{prev_cat}"),
+                    InlineKeyboardButton("1Y", callback_data=f"TIME|1y|{symbol}|{sid}|{prev_cat}")
                 )
-                markup.add(InlineKeyboardButton(f"⬅️ Back to {prev_cat.replace('_',' ')}", callback_data=f"CAT_{prev_cat}_{sid}"))
+                markup.add(InlineKeyboardButton(f"⬅️ Back to {prev_cat.replace('_',' ')}", callback_data=f"CAT|{prev_cat}|{sid}"))
                 
-                # Disable preview to show only text
                 no_preview = LinkPreviewOptions(is_disabled=True)
                 
                 if action == "TEXT":
-                    # Delete & Send if switching from Image -> Text (Telegram limitation)
                     bot.delete_message(call.message.chat.id, call.message.message_id)
                     bot.send_message(call.message.chat.id, msg, reply_markup=markup, parse_mode="HTML", link_preview_options=no_preview)
                 else:
                     bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, link_preview_options=no_preview)
+            else:
+                bot.send_message(call.message.chat.id, f"❌ Failed to fetch data for {symbol}. Try again later.")
 
         # --- UPDATE CHART (Preview Mode) ---
         elif action == "TIME":
-            period = parts[1]; symbol = parts[2]; sid = parts[3]
-            prev_cat = parts[4] if len(parts) > 4 else "INDIA"
+            period = parts[1]; symbol = parts[2]; sid = parts[3]; prev_cat = parts[4]
             
             bot.answer_callback_query(call.id, f"Loading {period} Chart...")
             data = get_data(symbol, period)
@@ -290,18 +285,18 @@ def handle_clicks(call):
                 msg = format_message(symbol, symbol, data, period, show_chart=True)
                 markup = InlineKeyboardMarkup()
                 markup.row(
-                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}_{prev_cat}"),
-                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}_{prev_cat}"),
-                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}_{prev_cat}"),
-                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}_{prev_cat}")
+                    InlineKeyboardButton("1M", callback_data=f"TIME|1mo|{symbol}|{sid}|{prev_cat}"),
+                    InlineKeyboardButton("3M", callback_data=f"TIME|3mo|{symbol}|{sid}|{prev_cat}"),
+                    InlineKeyboardButton("6M", callback_data=f"TIME|6mo|{symbol}|{sid}|{prev_cat}"),
+                    InlineKeyboardButton("1Y", callback_data=f"TIME|1y|{symbol}|{sid}|{prev_cat}")
                 )
-                markup.add(InlineKeyboardButton("📄 Text View", callback_data=f"TEXT_{symbol}_{sid}_{prev_cat}"))
+                markup.add(InlineKeyboardButton("📄 Text View", callback_data=f"TEXT|{symbol}|{sid}|{prev_cat}"))
                 markup.add(InlineKeyboardButton("⚡ Join Group", url=GROUP_LINK))
 
-                # Enable preview to show Chart
                 show_preview = LinkPreviewOptions(is_disabled=False, prefer_large_media=True)
-
                 bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, link_preview_options=show_preview)
+            else:
+                bot.send_message(call.message.chat.id, f"❌ Failed to load chart for {symbol}.")
 
         # --- BACK NAV ---
         elif action == "BACK":
@@ -311,15 +306,17 @@ def handle_clicks(call):
                 markup = InlineKeyboardMarkup()
                 for cat, items in categories.items():
                     if items:
-                         markup.add(InlineKeyboardButton(f"{cat.replace('_',' ')} ({len(items)})", callback_data=f"CAT_{cat}_{sid}"))
+                        label = {'INDIA': "🇮🇳 India", 'US_GLOBAL': "🌎 Global"}.get(cat, f"📂 {cat}")
+                        markup.add(InlineKeyboardButton(f"{label} ({len(items)})", callback_data=f"CAT|{cat}|{sid}"))
                 bot.edit_message_text("👇 <b>Select Market:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
     except Exception as e:
         print(f"Error: {e}")
 
-print("✅ Bot Live (Instant Link Previews & Clean Logs)...")
+print("✅ Bot Live (Token Updated)...")
 while True:
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except Exception as e:
+        print(f"⚠️ Connection Lost: {e}. Retrying...")
         time.sleep(5)
