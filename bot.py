@@ -1,11 +1,12 @@
 import telebot
-from telebot.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from telebot.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
 import requests
 import logging
 import uuid
 import time
 from datetime import datetime
-import json # Used for the chart payload
+import json
+import urllib.parse # To encode the URL safely
 
 # ==========================================
 # 1. CONFIGURATION
@@ -21,25 +22,24 @@ bot = telebot.TeleBot(BOT_TOKEN)
 SEARCH_CACHE = {}
 
 # ==========================================
-# 2. CLOUD CHART ENGINE (QuickChart.io)
+# 2. URL GENERATOR (For Image Preview)
 # ==========================================
-def generate_chart(symbol, prices, timestamps, period, change_pct):
-    """Sends data to QuickChart.io and gets an image back"""
-    print(f"🎨 Rendering Chart for {symbol}...")
+def get_chart_url(symbol, prices, timestamps, period, change_pct):
+    """Generates a QuickChart URL string (No download)"""
     try:
-        # 1. Downsample data (Phone screens are small, we don't need 365 points)
-        # If we have too many points, the URL gets too long or the chart looks messy.
-        step = 1
-        if len(prices) > 100: step = len(prices) // 100 # Keep max ~100 points
+        # 1. Aggressive Downsampling (Keep URL short for Telegram Preview)
+        # Telegram ignores previews if URL is > 2000 chars
+        max_points = 60 
+        step = len(prices) // max_points if len(prices) > max_points else 1
         
         dates = [datetime.fromtimestamp(ts).strftime('%d %b') for ts in timestamps[::step]]
         values = prices[::step]
         
-        # 2. Pick Color
-        line_color = 'rgb(0, 255, 0)' if change_pct >= 0 else 'rgb(255, 0, 0)' # Bright Green/Red
+        # 2. Colors
+        line_color = 'rgb(0, 255, 0)' if change_pct >= 0 else 'rgb(255, 0, 0)'
         fill_color = 'rgba(0, 255, 0, 0.2)' if change_pct >= 0 else 'rgba(255, 0, 0, 0.2)'
         
-        # 3. Construct the Chart Config (Chart.js format)
+        # 3. Build Config
         chart_config = {
             "type": "line",
             "data": {
@@ -51,54 +51,32 @@ def generate_chart(symbol, prices, timestamps, period, change_pct):
                     "backgroundColor": fill_color,
                     "borderWidth": 2,
                     "fill": True,
-                    "pointRadius": 0 # Hide dots for a clean line
+                    "pointRadius": 0 
                 }]
             },
             "options": {
-                "title": {
-                    "display": True,
-                    "text": f"{symbol} ({period.upper()})",
-                    "fontColor": "#fff"
-                },
+                "title": { "display": True, "text": f"{symbol} ({period.upper()})", "fontColor": "#fff" },
                 "legend": { "display": False },
                 "scales": {
-                    "xAxes": [{ 
-                        "gridLines": { "display": False },
-                        "ticks": { "fontColor": "#ccc", "maxTicksLimit": 6 }
-                    }],
-                    "yAxes": [{ 
-                        "gridLines": { "color": "rgba(255,255,255,0.1)" },
-                        "ticks": { "fontColor": "#ccc" }
-                    }]
+                    "xAxes": [{ "display": False }], # Hide X-Axis text to save URL space
+                    "yAxes": [{ "gridLines": { "color": "rgba(255,255,255,0.1)" }, "ticks": { "fontColor": "#ccc" } }]
                 }
             }
         }
         
-        # 4. Request the Image (Dark Mode URL)
-        # We use a POST request because the data might be too long for a URL
-        url = "https://quickchart.io/chart"
-        payload = {
-            "backgroundColor": "#151515", # Dark Background
-            "width": 800,
-            "height": 400,
-            "format": "png",
-            "chart": chart_config
-        }
+        # 4. Create the URL
+        # We assume dark mode background
+        json_str = json.dumps(chart_config)
+        encoded_json = urllib.parse.quote(json_str)
         
-        response = requests.post(url, json=payload, timeout=5)
-        
-        if response.status_code == 200:
-            return response.content # The raw image bytes
-        else:
-            print("❌ QuickChart Failed")
-            return None
+        return f"https://quickchart.io/chart?bkg=%23151515&w=800&h=400&c={encoded_json}"
 
     except Exception as e:
-        print(f"🔥 Chart Error: {e}")
-        return None
+        print(f"🔥 URL Error: {e}")
+        return ""
 
 # ==========================================
-# 3. SEARCH ENGINE (Global Buckets)
+# 3. SEARCH ENGINE
 # ==========================================
 def search_yahoo_categorized(query):
     try:
@@ -174,17 +152,19 @@ def get_data(ticker, period="1y"):
             "currency": currency, "prices": closes, "timestamps": timestamps,
             "change": pct_change
         }
-    except Exception as e:
-        print(e)
-        return None
+    except: return None
 
-def format_message(name, symbol, data, period):
+# ==========================================
+# 5. MESSAGE FORMATTER (With Invisible Link)
+# ==========================================
+def format_message(name, symbol, data, period, show_chart=False):
     p = data['price']
     dma = data['dma']
     cur = "₹" if data['currency'] == "INR" else "$"
     emoji = "🟢" if data['change'] > 0 else "🔴"
-
-    return (
+    
+    # Base Text
+    text = (
         f"📊 <b>{name} ({symbol})</b>\n"
         f"💰 Price: {cur}{p:,.2f}\n"
         f"📏 200 DMA: {cur}{dma:,.2f}\n"
@@ -192,9 +172,18 @@ def format_message(name, symbol, data, period):
         f"⏳ <b>{period.upper()} Return:</b> {emoji} {data['change']:+.2f}%\n"
         f"via @{bot.get_me().username}"
     )
+    
+    # MAGIC: Embed Invisible Link for Preview
+    if show_chart:
+        chart_url = get_chart_url(symbol, data['prices'], data['timestamps'], period, data['change'])
+        if chart_url:
+            # The invisible character (&#8205;) makes the link valid but hidden
+            text = f"<a href='{chart_url}'>&#8205;</a>" + text
+            
+    return text
 
 # ==========================================
-# 5. HANDLERS
+# 6. HANDLERS
 # ==========================================
 @bot.message_handler(commands=['analyze', 'analyse'])
 def start_search(message):
@@ -230,6 +219,7 @@ def handle_clicks(call):
         parts = call.data.split('_')
         action = parts[0]
         
+        # --- SHOW CATEGORY ---
         if action == "CAT":
             cat = parts[1]
             if len(parts) > 3: cat = parts[1] + "_" + parts[2]; sid = parts[3]
@@ -243,6 +233,7 @@ def handle_clicks(call):
             markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"BACK_{sid}"))
             bot.edit_message_text(f"📂 <b>{cat} Results:</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML")
 
+        # --- GET DATA (Default: No Chart, Just Text) ---
         elif action == "GET":
             symbol = parts[1]
             sid = parts[2]
@@ -250,7 +241,8 @@ def handle_clicks(call):
             
             data = get_data(symbol, "1y")
             if data:
-                msg = format_message(symbol, symbol, data, "1y")
+                # show_chart=False (Standard View)
+                msg = format_message(symbol, symbol, data, "1y", show_chart=False)
                 markup = InlineKeyboardMarkup()
                 markup.row(
                     InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}"),
@@ -258,39 +250,39 @@ def handle_clicks(call):
                     InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}"),
                     InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}")
                 )
-                markup.add(InlineKeyboardButton("⬅️ Back", callback_data=f"CAT_INDIA_{sid}")) 
-                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
+                markup.add(InlineKeyboardButton("⬅️ Back Menu", callback_data=f"CAT_INDIA_{sid}")) # Approximate back
+                
+                # NOTE: link_preview_options allows us to Force Hide/Show preview
+                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
+        # --- UPDATE CHART (Preview Mode) ---
         elif action == "TIME":
             period = parts[1]
             symbol = parts[2]
             sid = parts[3]
             
-            bot.answer_callback_query(call.id, f"Generating {period} Chart...")
+            bot.answer_callback_query(call.id, f"Loading {period} Chart...")
             data = get_data(symbol, period)
+            
             if data:
-                # 🎨 RENDER VIA QUICKCHART (No Matplotlib required)
-                img_data = generate_chart(symbol, data['prices'], data['timestamps'], period, data['change'])
+                # show_chart=True (Adds the Invisible Link)
+                msg = format_message(symbol, symbol, data, period, show_chart=True)
                 
-                if img_data:
-                    caption = format_message(symbol, symbol, data, period)
-                    markup = InlineKeyboardMarkup()
-                    markup.row(
-                        InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}"),
-                        InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}"),
-                        InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}"),
-                        InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}")
-                    )
-                    markup.add(InlineKeyboardButton("⬅️ Back Menu", callback_data=f"GET_{symbol}_{sid}"))
-                    markup.add(InlineKeyboardButton("⚡ Join Group", url=GROUP_LINK))
+                markup = InlineKeyboardMarkup()
+                markup.row(
+                    InlineKeyboardButton("1M", callback_data=f"TIME_1mo_{symbol}_{sid}"),
+                    InlineKeyboardButton("3M", callback_data=f"TIME_3mo_{symbol}_{sid}"),
+                    InlineKeyboardButton("6M", callback_data=f"TIME_6mo_{symbol}_{sid}"),
+                    InlineKeyboardButton("1Y", callback_data=f"TIME_1y_{symbol}_{sid}")
+                )
+                # "Close Chart" button just reloads data with show_chart=False
+                markup.add(InlineKeyboardButton("❌ Close Chart", callback_data=f"GET_{symbol}_{sid}"))
+                markup.add(InlineKeyboardButton("⚡ Join Group", url=GROUP_LINK))
 
-                    try:
-                        media = InputMediaPhoto(img_data, caption=caption, parse_mode="HTML")
-                        bot.edit_message_media(media=media, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-                    except:
-                        bot.delete_message(call.message.chat.id, call.message.message_id)
-                        bot.send_photo(call.message.chat.id, img_data, caption=caption, reply_markup=markup, parse_mode="HTML")
+                # disable_web_page_preview=False enables the chart
+                bot.edit_message_text(msg, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
 
+        # --- BACK NAV ---
         elif action == "BACK":
             sid = parts[1]
             if sid in SEARCH_CACHE:
@@ -304,7 +296,7 @@ def handle_clicks(call):
     except Exception as e:
         print(f"Error: {e}")
 
-print("✅ Cloud-Rendered Bot is Live...")
+print("✅ Bot Live (Instant Link Previews)...")
 while True:
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
