@@ -11,7 +11,6 @@ import urllib.parse
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-# ✅ NEW TOKEN UPDATED BELOW
 BOT_TOKEN = "8266741813:AAEsSvUIQhdDVKudeBck28QOFpnuk2rTSzA"
 GROUP_LINK = "https://t.me/traders_chat_group"
 
@@ -23,16 +22,19 @@ bot = telebot.TeleBot(BOT_TOKEN)
 SEARCH_CACHE = {}
 
 # ==========================================
-# 2. URL GENERATOR (For Image Preview)
+# 2. URL GENERATOR (Optimized for Speed)
 # ==========================================
 def get_chart_url(symbol, prices, timestamps, period, change_pct):
     try:
-        # Aggressive Downsampling for URL limit
-        max_points = 60 
+        # 1. Ultra-Aggressive Downsampling (Max 40 points)
+        # Fewer points = Shorter URL = Faster Telegram Preview
+        max_points = 40 
         step = len(prices) // max_points if len(prices) > max_points else 1
         
+        # 2. Round Numbers (Crucial optimization)
+        # $420.5023 -> 420. Saves huge space in the URL.
+        values = [int(p) for p in prices[::step]]
         dates = [datetime.fromtimestamp(ts).strftime('%d %b') for ts in timestamps[::step]]
-        values = prices[::step]
         
         line_color = 'rgb(0, 255, 0)' if change_pct >= 0 else 'rgb(255, 0, 0)'
         fill_color = 'rgba(0, 255, 0, 0.2)' if change_pct >= 0 else 'rgba(255, 0, 0, 0.2)'
@@ -192,7 +194,7 @@ def format_message(name, symbol, data, period, show_chart=False):
     return text
 
 # ==========================================
-# 6. HANDLERS
+# 6. HANDLERS (With Error Feedback)
 # ==========================================
 @bot.message_handler(commands=['analyze', 'analyse'])
 def start_search(message):
@@ -313,7 +315,7 @@ def handle_clicks(call):
     except Exception as e:
         print(f"Error: {e}")
 
-print("✅ Bot Live (Token Updated)...")
+print("✅ Bot Live (Optimized Charts)...")
 while True:
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
